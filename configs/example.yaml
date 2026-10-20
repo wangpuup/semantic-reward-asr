@@ -1,0 +1,68 @@
+# Example configuration: Whisper features -> projector + LoRA LLM -> SFT -> GRPO with semantic rewards.
+# All paths are relative to the repository root (run_demo.sh cd's there) unless absolute.
+# Copy this file and edit it; every experiment is one config.
+
+data:
+  # ESPnet-style recipe directory holding dump/raw/<split>/{wav.scp,text}; wav.scp paths are relative to it.
+  kaldi_root: /path/to/espnet/egs2/librispeech_100/asr1
+  splits:
+    train: {kaldi_dir: dump/raw/train_clean_100_sp, max_utts: 4000, exclude_prefix: "sp"}   # drop speed-perturbed copies
+    dev:   {kaldi_dir: dump/raw/dev_clean,          max_utts: 300}
+    test:  {kaldi_dir: dump/raw/test_clean,         max_utts: 500}
+  max_seconds: 20.0          # skip longer utterances
+  feature_dir: data/features # cached encoder features (.npy, fp16); transferred to Condor scratch by train.job
+  manifest_dir: data/manifests
+
+encoder:
+  name: openai/whisper-large-v3   # frozen; any HF Whisper checkpoint works
+  stack: 5                        # 50 Hz -> 10 Hz, feature dim 1280*5 = 6400
+  batch_size: 8
+
+model:
+  llm: Qwen/Qwen2.5-0.5B     # swap freely: Qwen/Qwen2.5-3B, Qwen/Qwen2.5-7B, Qwen/Qwen3-1.7B, ...
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_targets: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  projector_hidden: 2048
+  prompt: "Transcribe the speech:"
+  # --- memory settings (measured: everything from 0.5B to 7B fits a 24 GB GPU with these on) ---
+  grad_checkpoint: true      # recompute transformer activations in backward (SFT and GRPO)
+  prune_vocab: grpo          # shrink the LM head to the tokens that occur in the corpus (151k -> ~12k)
+                             #   "grpo" = only for the RL stage (recommended: pruning before SFT breaks convergence)
+                             #   true   = all stages;  false = never
+
+sft:                         # supervised fine-tuning: projector + LoRA, cross-entropy on reference transcripts
+  epochs: 2
+  batch_size: 8
+  lr: 1.0e-4
+  warmup_steps: 100
+  grad_accum: 1
+  eval_every: 250
+  out_dir: exp/example_sft
+
+grpo:                        # RL stage; self-contained GRPO loop (src/train/grpo.py)
+  init_from: exp/example_sft/best   # SFT checkpoint = policy init and frozen KL reference
+  steps: 150
+  utts_per_step: 2
+  group_size: 8
+  temperature: 0.9
+  max_new_tokens: 96
+  lr: 1.0e-5
+  kl_beta: 0.1
+  eval_every: 50
+  rewards:                   # weighted sum of registered rewards (src/rewards/registry.py); each is ~[-1, 1]
+    - {name: wer, weight: 1.0}                                                  # 1 - WER
+    - {name: sbert, weight: 1.0, model: sentence-transformers/all-mpnet-base-v2} # cosine similarity
+    - {name: hallucination, weight: 1.0}                                        # -1 on length blow-up / n-gram loops
+    # other registered rewards:
+    # - {name: keyword, weight: 1.0}                                            # content-word F1
+    # - {name: bertscore, weight: 1.0}                                          # BERTScore F1 (roberta-large)
+    # - {name: llm_judge, weight: 1.0, model: Qwen/Qwen2.5-1.5B-Instruct}       # P(yes) "same meaning?" (+~3.5 GB)
+  out_dir: exp/example_grpo
+
+eval:
+  batch_size: 16
+  max_new_tokens: 128
+  bertscore: false           # roberta-large download ~1.4 GB
+  # judge_model: Qwen/Qwen2.5-1.5B-Instruct   # optional LLM-judge metric at eval time (use a different model than the reward judge)

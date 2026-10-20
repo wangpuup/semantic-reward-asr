@@ -1,0 +1,27 @@
+# Stages 1-3: SFT -> GRPO -> eval. HTCondor copies the feature cache + manifests into the job's local
+# scratch dir first, so training never reads the shared filesystem (only small outputs are written there).
+# Submit from the repository root (mkdir -p logs first):
+#   condor_submit condor/train.job
+#   condor_submit -a 'Arguments = train configs/my_experiment.yaml' condor/train.job
+Universe         = vanilla
+Executable       = run_demo.sh
+Arguments        = train configs/example.yaml
+RequestCpus      = 4
+RequestMemory    = 32G
+Request_GPUs     = 1
++RequestWalltime = 28800
+# 24 GB-class NVIDIA GPUs are enough for 0.5B-7B with grad_checkpoint + prune_vocab
+Requirements     = (GPUs_GlobalMemoryMb >= 20000) && (GPUs_Capability >= 8.0) && regexp("NVIDIA", GPUs_DeviceName)
+NiceUser         = true
+Notification     = Never
+environment      = "PROJECT_ROOT=$ENV(PWD)"
+ShouldTransferFiles = yes
+WhenToTransferOutput = ON_EXIT
+TransferInputFiles = data/features,data/manifests
+transfer_output_files = ""
+stream_output = true
+stream_error = true
+Log              = logs/train_$(Cluster).log
+Output           = logs/train_$(Cluster).out
+Error            = logs/train_$(Cluster).err
+Queue 1

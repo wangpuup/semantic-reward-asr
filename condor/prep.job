@@ -1,0 +1,21 @@
+# Stage 0: manifests + frozen-encoder feature cache. The audio corpus is read from the shared filesystem and
+# the cache is written there (train.job transfers it to local scratch later), so nothing is staged in.
+# Submit from the repository root:  condor_submit condor/prep.job
+Universe         = vanilla
+Executable       = run_demo.sh
+Arguments        = prep configs/example.yaml
+RequestCpus      = 4
+RequestMemory    = 16G
+Request_GPUs     = 1
++RequestWalltime = 7200
+Requirements     = (GPUs_GlobalMemoryMb >= 10000) && (GPUs_Capability >= 7.0) && regexp("NVIDIA", GPUs_DeviceName)
+NiceUser         = true
+Notification     = Never
+environment      = "PROJECT_ROOT=$ENV(PWD)"
+ShouldTransferFiles = yes
+WhenToTransferOutput = ON_EXIT
+transfer_output_files = ""
+Log              = logs/prep_$(Cluster).log
+Output           = logs/prep_$(Cluster).out
+Error            = logs/prep_$(Cluster).err
+Queue 1
